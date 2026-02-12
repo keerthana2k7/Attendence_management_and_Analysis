@@ -48,6 +48,11 @@ if image is None:
     print("group.jpg not found")
     exit()
 
+# -----------------------------------------
+# Resize image to improve small / far faces
+# -----------------------------------------
+image = cv2.resize(image, None, fx=1.3, fy=1.3, interpolation=cv2.INTER_CUBIC)
+
 rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 # -----------------------
@@ -111,8 +116,11 @@ for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodi
 
         best_index = np.argmin(distances)
 
-        # tighter threshold to avoid wrong person
-        if distances[best_index] < 0.47:
+        # safer match (avoid wrong person)
+        sorted_dist = np.sort(distances)
+
+        if distances[best_index] < 0.47 and (len(sorted_dist) == 1 or (sorted_dist[1] - sorted_dist[0]) > 0.05):
+
             name = known_names[best_index]
 
             if name not in marked_students:
