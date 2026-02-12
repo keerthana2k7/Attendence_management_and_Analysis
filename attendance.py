@@ -2,110 +2,125 @@ import face_recognition
 import cv2
 import os
 import numpy as np
+import pandas as pd
 from datetime import datetime
 
-# Path to dataset
-path = 'dataset'
-images = []
-classNames = []
+# -----------------------
+# Load All Students Dataset
+# -----------------------
 
-# Load images
-for person in os.listdir(path):
-    person_path = os.path.join(path, person)
-    for img_name in os.listdir(person_path):
-        img_path = os.path.join(person_path, img_name)
-        img = cv2.imread(img_path)
+known_encodings = []
+known_names = []
 
-        if img is None:
-            print(f"Warning: Unable to load image {img_path}")
-            continue
+dataset_path = "dataset"
 
-        images.append(img)
-        classNames.append(person)
+for student_name in os.listdir(dataset_path):
 
-print("Encoding Started...")
+    student_folder = os.path.join(dataset_path, student_name)
 
-# Encode faces safely
-def findEncodings(images):
-    encodeList = []
-    validClassNames = []
+    if not os.path.isdir(student_folder):
+        continue
 
-    for img, name in zip(images, classNames):
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        encodes = face_recognition.face_encodings(img)
+    for image_name in os.listdir(student_folder):
 
-        if len(encodes) > 0:
-            encodeList.append(encodes[0])
-            validClassNames.append(name)
-        else:
-            print(f"Warning: No face found for {name}")
+        image_path = os.path.join(student_folder, image_name)
+        image = face_recognition.load_image_file(image_path)
 
-    return encodeList, validClassNames
+        encodings = face_recognition.face_encodings(image)
 
+        if len(encodings) > 0:
+            known_encodings.append(encodings[0])
+            known_names.append(student_name)
 
-encodeListKnown, classNames = findEncodings(images)
+print("All Students Encoded Successfully")
 
-if len(encodeListKnown) == 0:
-    print("No valid face encodings found. Check your dataset images.")
-    exit()
+# -----------------------
+# Start Webcam
+# -----------------------
 
-print("Encoding Complete")
+video_capture = cv2.VideoCapture(0)
 
-# Mark attendance
-def markAttendance(name):
-    with open('attendance.csv', 'a+') as f:
-        f.seek(0)
-        myDataList = f.readlines()
-        nameList = []
+marked_students = set()
 
-        for line in myDataList:
-            entry = line.split(',')
-            nameList.append(entry[0])
-
-        if name not in nameList:
-            now = datetime.now()
-            dtString = now.strftime('%d-%m-%Y %H:%M:%S')
-            f.writelines(f'\n{name},{dtString},PRESENT')
-
-
-# Start webcam
-cap = cv2.VideoCapture(0)
+# Create CSV with header if not exists
+if not os.path.exists("attendance.csv"):
+    df = pd.DataFrame(columns=["Name", "Time", "Status"])
+    df.to_csv("attendance.csv", index=False)
 
 while True:
-    success, img = cap.read()
-
-    if not success:
-        print("Failed to access webcam")
+    ret, frame = video_capture.read()
+    if not ret:
         break
 
-    imgS = cv2.resize(img, (0, 0), None, 0.25, 0.25)
-    imgS = cv2.cvtColor(imgS, cv2.COLOR_BGR2RGB)
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    facesCurFrame = face_recognition.face_locations(imgS)
-    encodesCurFrame = face_recognition.face_encodings(imgS, facesCurFrame)
+    face_locations = face_recognition.face_locations(rgb_frame)
+    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-    for encodeFace, faceLoc in zip(encodesCurFrame, facesCurFrame):
-        matches = face_recognition.compare_faces(encodeListKnown, encodeFace)
-        faceDis = face_recognition.face_distance(encodeListKnown, encodeFace)
+    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
 
-        matchIndex = np.argmin(faceDis)
+        name = "Unknown"
 
-        if matches[matchIndex]:
-            name = classNames[matchIndex].upper()
+        face_distances = face_recognition.face_distance(
+            known_encodings, face_encoding
+        )
 
-            y1, x2, y2, x1 = faceLoc
-            y1, x2, y2, x1 = y1 * 4, x2 * 4, y2 * 4, x1 * 4
+        if len(face_distances) > 0:
 
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img, name, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            best_match_index = np.argmin(face_distances)
 
-            markAttendance(name)
+            # strict threshold to avoid false match
+            if face_distances[best_match_index] < 0.45:
+                name = known_names[best_match_index]
 
-    cv2.imshow('Webcam', img)
+                if name not in marked_students:
+
+                    now = datetime.now()
+                    dt_string = now.strftime("%d-%m-%Y %H:%M:%S")
+
+                    df = pd.DataFrame(
+                        [[name, dt_string, "PRESENT"]],
+                        columns=["Name", "Time", "Status"]
+                    )
+
+                    df.to_csv("attendance.csv", mode="a",
+                              header=False, index=False)
+
+                    marked_students.add(name)
+                    print(f"{name} Marked Present")
+
+        cv2.rectangle(frame, (left, top), (right, bottom),
+                      (0, 255, 0), 2)
+
+        cv2.putText(frame, name, (left, top - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                    (0, 255, 0), 2)
+
+    cv2.imshow("Class Attendance System", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cap.release()
+# -----------------------
+# Mark absent students
+# -----------------------
+
+now = datetime.now()
+dt_string = now.strftime("%d-%m-%Y %H:%M:%S")
+
+for student in set(known_names):
+
+    if student not in marked_students:
+
+        df = pd.DataFrame(
+            [[student, dt_string, "ABSENT"]],
+            columns=["Name", "Time", "Status"]
+        )
+
+        df.to_csv("attendance.csv", mode="a",
+                  header=False, index=False)
+
+        print(f"{student} Marked Absent")
+
+video_capture.release()
 cv2.destroyAllWindows()
